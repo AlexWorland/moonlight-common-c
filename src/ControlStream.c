@@ -2030,9 +2030,9 @@ int LiSendAutoBitrateUpdate(uint32_t targetKbps, uint8_t connectionStatus) {
     // Apollo protocol extension packet type
     const short AUTO_BITRATE_UPDATE_PACKET_TYPE = 0x3003;
     
-    // Check if connection is established
+    // Check if control stream is initialized and connection is established
     if (AppVersionQuad[0] >= 5) {
-        if (peer == NULL || stopping || ConnectionInterrupted) {
+        if (client == NULL || peer == NULL || stopping || ConnectionInterrupted) {
             return -1;
         }
     }
