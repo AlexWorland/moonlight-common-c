@@ -2078,3 +2078,4 @@ int LiSendAutoBitrateUpdate(uint32_t targetKbps, uint8_t connectionStatus) {
     
     return 0;
 }
+
