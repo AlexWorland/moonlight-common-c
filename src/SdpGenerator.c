@@ -369,6 +369,12 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
         if (IS_SUNSHINE()) {
             snprintf(payloadStr, sizeof(payloadStr), "%u", StreamConfig.bitrate);
             err |= addAttributeString(&optionHead, "x-ml-video.configuredBitrateKbps", payloadStr);
+
+            // Send auto bitrate flag if enabled
+            if (StreamConfig.autoBitrateEnabled) {
+                snprintf(payloadStr, sizeof(payloadStr), "1");
+                err |= addAttributeString(&optionHead, "x-ml-video.autoBitrateEnabled", payloadStr);
+            }
         }
     }
     else {
