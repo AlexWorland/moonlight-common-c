@@ -935,6 +935,10 @@ void LiCompleteVideoFrame(VIDEO_FRAME_HANDLE handle, int drStatus);
 // See ConnListenerSetHdrMode() for more details.
 bool LiGetCurrentHostDisplayHdrMode(void);
 
+// This function returns true if the current connection status came from the host,
+// false if it was calculated by the client.
+bool LiIsConnectionStatusFromHost(void);
+
 typedef struct _SS_HDR_METADATA {
     // RGB order
     struct {

@@ -113,6 +113,10 @@ static int lastConnectionStatusUpdate;
 static uint32_t currentEnetSequenceNumber;
 static uint64_t firstFrameTimeMs;
 
+// Host-provided connection status tracking
+static int hostConnectionStatus = -1;  // -1 = unknown, CONN_STATUS_OKAY, or CONN_STATUS_POOR
+static bool connectionStatusFromHost = false;
+
 static LINKED_BLOCKING_QUEUE invalidReferenceFrameTuples;
 static LINKED_BLOCKING_QUEUE frameFecStatusQueue;
 static LINKED_BLOCKING_QUEUE asyncCallbackQueue;
@@ -142,6 +146,7 @@ static PPLT_CRYPTO_CONTEXT decryptionCtx;
 #define IDX_SET_CLIPBOARD 13
 #define IDX_FILE_TRANSFER_NONCE_REQUEST 14
 #define IDX_DS_ADAPTIVE_TRIGGERS 15
+#define IDX_CONNECTION_STATUS 19
 
 #define CONTROL_STREAM_TIMEOUT_SEC 10
 #define CONTROL_STREAM_LINGER_TIMEOUT_SEC 2
@@ -163,6 +168,7 @@ static const short packetTypesGen3[] = {
     -1,     // Set Clipboard (unused)
     -1,     // File transfer nonce request (unused)
     -1,     // Set Adaptive Triggers (unused)
+    -1,     // Connection status (unused in Gen3)
 };
 static const short packetTypesGen4[] = {
     0x0606, // Request IDR frame
@@ -181,6 +187,7 @@ static const short packetTypesGen4[] = {
     -1,     // Set Clipboard (unused)
     -1,     // File transfer nonce request (unused)
     -1,     // Set Adaptive Triggers (unused)
+    -1,     // Connection status (unused in Gen4)
 };
 static const short packetTypesGen5[] = {
     0x0305, // Start A
@@ -199,6 +206,7 @@ static const short packetTypesGen5[] = {
     -1,     // Set Clipboard (unused)
     -1,     // File transfer nonce request (unused)
     -1,     // Set Adaptive Triggers (unused)
+    -1,     // Connection status (unused in Gen5)
 };
 static const short packetTypesGen7[] = {
     0x0305, // Start A
@@ -217,6 +225,7 @@ static const short packetTypesGen7[] = {
     -1,     // Set Clipboard (unused)
     -1,     // File transfer nonce request (unused)
     -1,     // Set Adaptive Triggers (unused)
+    0x3003, // Connection status (Apollo protocol extension)
 };
 static const short packetTypesGen7Enc[] = {
     0x0302, // Request IDR frame
@@ -235,6 +244,7 @@ static const short packetTypesGen7Enc[] = {
     0x3001, // Set Clipboard (Apollo protocol extension)
     0x3002, // File transfer nonce request (Apollo protocol extension)
     0x5503, // Set Adaptive Triggers (Sunshine protocol extension)
+    0x3003, // Connection status (Apollo protocol extension)
 };
 
 static const char requestIdrFrameGen3[] = { 0, 0 };
@@ -485,22 +495,25 @@ void connectionSawFrame(uint32_t frameIndex) {
 
     if (now - intervalStartTimeMs >= CONN_STATUS_SAMPLE_PERIOD) {
         if (intervalTotalFrameCount != 0) {
-            // Notify the client of connection status changes based on frame loss rate
-            int frameLossPercent = 100 - (intervalGoodFrameCount * 100) / intervalTotalFrameCount;
-            if (lastConnectionStatusUpdate != CONN_STATUS_POOR &&
-                    (frameLossPercent >= CONN_IMMEDIATE_POOR_LOSS_RATE ||
-                     (frameLossPercent >= CONN_CONSECUTIVE_POOR_LOSS_RATE && lastIntervalLossPercentage >= CONN_CONSECUTIVE_POOR_LOSS_RATE))) {
-                // We require 2 consecutive intervals above CONN_CONSECUTIVE_POOR_LOSS_RATE or a single
-                // interval above CONN_IMMEDIATE_POOR_LOSS_RATE to notify of a poor connection.
-                ListenerCallbacks.connectionStatusUpdate(CONN_STATUS_POOR);
-                lastConnectionStatusUpdate = CONN_STATUS_POOR;
-            }
-            else if (frameLossPercent <= CONN_OKAY_LOSS_RATE && lastConnectionStatusUpdate != CONN_STATUS_OKAY) {
-                ListenerCallbacks.connectionStatusUpdate(CONN_STATUS_OKAY);
-                lastConnectionStatusUpdate = CONN_STATUS_OKAY;
-            }
+            // Only calculate client-side status if host status is not available
+            if (!connectionStatusFromHost) {
+                // Notify the client of connection status changes based on frame loss rate
+                int frameLossPercent = 100 - (intervalGoodFrameCount * 100) / intervalTotalFrameCount;
+                if (lastConnectionStatusUpdate != CONN_STATUS_POOR &&
+                        (frameLossPercent >= CONN_IMMEDIATE_POOR_LOSS_RATE ||
+                         (frameLossPercent >= CONN_CONSECUTIVE_POOR_LOSS_RATE && lastIntervalLossPercentage >= CONN_CONSECUTIVE_POOR_LOSS_RATE))) {
+                    // We require 2 consecutive intervals above CONN_CONSECUTIVE_POOR_LOSS_RATE or a single
+                    // interval above CONN_IMMEDIATE_POOR_LOSS_RATE to notify of a poor connection.
+                    ListenerCallbacks.connectionStatusUpdate(CONN_STATUS_POOR);
+                    lastConnectionStatusUpdate = CONN_STATUS_POOR;
+                }
+                else if (frameLossPercent <= CONN_OKAY_LOSS_RATE && lastConnectionStatusUpdate != CONN_STATUS_OKAY) {
+                    ListenerCallbacks.connectionStatusUpdate(CONN_STATUS_OKAY);
+                    lastConnectionStatusUpdate = CONN_STATUS_OKAY;
+                }
 
-            lastIntervalLossPercentage = frameLossPercent;
+                lastIntervalLossPercentage = frameLossPercent;
+            }
         }
 
         // Reset interval
@@ -1008,6 +1021,17 @@ static void asyncCallbackThreadFunc(void* context) {
                                                   queuedCb->data.dsAdaptiveTrigger.left,
                                                   queuedCb->data.dsAdaptiveTrigger.right);
             break;
+        case IDX_CONNECTION_STATUS:
+            // Connection status from host - consume all batched events
+            while (LbqPeekQueueElement(&asyncCallbackQueue, (void**)&nextCb) == LBQ_SUCCESS && nextCb->typeIndex == queuedCb->typeIndex) {
+                if (LbqPollQueueElement(&asyncCallbackQueue, (void**)&nextCb) != LBQ_SUCCESS) {
+                    break;
+                }
+                free(queuedCb);
+                queuedCb = nextCb;
+            }
+            // Status is stored in hostConnectionStatus, callback will be invoked from receive thread
+            break;
         default:
             // Unhandled packet type from queueAsyncCallback()
             LC_ASSERT(false);
@@ -1026,7 +1050,8 @@ static bool needsAsyncCallback(unsigned short packetType) {
            packetType == packetTypes[IDX_HDR_INFO] ||
            packetType == packetTypes[IDX_SET_CLIPBOARD] ||
            packetType == packetTypes[IDX_FILE_TRANSFER_NONCE_REQUEST] ||
-           packetType == packetTypes[IDX_DS_ADAPTIVE_TRIGGERS];
+           packetType == packetTypes[IDX_DS_ADAPTIVE_TRIGGERS] ||
+           packetType == packetTypes[IDX_CONNECTION_STATUS];
 }
 
 static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLength) {
@@ -1086,6 +1111,9 @@ static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLe
         BbGetBytes(&bb, queuedCb->data.dsAdaptiveTrigger.left, DS_EFFECT_PAYLOAD_SIZE);
         BbGetBytes(&bb, queuedCb->data.dsAdaptiveTrigger.right, DS_EFFECT_PAYLOAD_SIZE);
         queuedCb->typeIndex = IDX_DS_ADAPTIVE_TRIGGERS;
+    }
+    else if (ctlHdr->type == packetTypes[IDX_CONNECTION_STATUS]) {
+        queuedCb->typeIndex = IDX_CONNECTION_STATUS;
     }
     else {
         // Unhandled packet type from needsAsyncCallback()
@@ -1290,6 +1318,23 @@ static void controlReceiveThreadFunc(void* context) {
                 }
 
                 hdrEnabled = (enableByte != 0);
+            }
+            // Process connection status from host immediately
+            else if (ctlHdr->type == packetTypes[IDX_CONNECTION_STATUS]) {
+                BYTE_BUFFER bb;
+                uint8_t statusByte;
+
+                BbInitializeWrappedBuffer(&bb, (char*)ctlHdr, sizeof(*ctlHdr), packetLength - sizeof(*ctlHdr), BYTE_ORDER_LITTLE);
+                BbGet8(&bb, &statusByte);
+
+                // Update host-provided status
+                hostConnectionStatus = (statusByte == 1) ? CONN_STATUS_POOR : CONN_STATUS_OKAY;
+                connectionStatusFromHost = true;
+
+                // Invoke callback immediately with host's status
+                if (ListenerCallbacks.connectionStatusUpdate != NULL) {
+                    ListenerCallbacks.connectionStatusUpdate(hostConnectionStatus);
+                }
             }
 
             // Process client callbacks in a separate thread
@@ -2039,6 +2084,10 @@ int startControlStream(void) {
 
 bool LiGetCurrentHostDisplayHdrMode(void) {
     return hdrEnabled;
+}
+
+bool LiIsConnectionStatusFromHost(void) {
+    return connectionStatusFromHost;
 }
 
 bool LiGetHdrMetadata(PSS_HDR_METADATA metadata) {
