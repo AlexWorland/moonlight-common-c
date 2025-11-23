@@ -348,10 +348,10 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
         }
     }
 
-    // GFE currently imposes a limit of 100 Mbps for the video bitrate. It will automatically
-    // impose that on maximumBitrateKbps but not on initialBitrateKbps. We will impose the cap
-    // ourselves so initialBitrateKbps does not exceed maximumBitrateKbps.
-    adjustedBitrate = adjustedBitrate > 100000 ? 100000 : adjustedBitrate;
+    // GFE currently imposes a limit of 100 Mbps for the video bitrate. However, Apollo/Sunshine
+    // supports higher bitrates up to 1 Gbps. We cap at 1 Gbps to allow higher bitrates for
+    // Apollo/Sunshine while still respecting GFE's limitations when connecting to GFE hosts.
+    adjustedBitrate = adjustedBitrate > 1000000 ? 1000000 : adjustedBitrate;
 
     // We don't support dynamic bitrate scaling properly (it tends to bounce between min and max and never
     // settle on the optimal bitrate if it's somewhere in the middle), so we'll just latch the bitrate
