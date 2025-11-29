@@ -77,9 +77,9 @@ jobs:
         id: check-changes
         if: steps.check-skip.outputs.skip != 'true'
         run: |
-          if [ -n "$(git status --porcelain docs/)" ]; then
+          if [ -n "$(git status --porcelain docs/html/)" ]; then
             echo "has_changes=true" >> $GITHUB_OUTPUT
-            git status --short docs/
+            git status --short docs/html/
           else
             echo "has_changes=false" >> $GITHUB_OUTPUT
             echo "No documentation changes detected"
@@ -88,7 +88,7 @@ jobs:
       - name: Commit and push documentation
         if: steps.check-skip.outputs.skip != 'true' && steps.check-changes.outputs.has_changes == 'true' && github.event.pull_request.head.repo.full_name == github.repository
         run: |
-          git add docs/
+          git add docs/html/
           git commit -m "docs: Auto-generate Doxygen documentation [skip ci]" || exit 0
           # Only push if PR is from same repository (not a fork)
           git push origin HEAD:${{ github.event.pull_request.head.ref }} || exit 0
